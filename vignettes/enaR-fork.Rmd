@@ -1,0 +1,2692 @@
+---
+title: "enaR fork using R Ecosystem"
+author: "Ralien Purco"
+date: "`r Sys.Date()`"
+---
+
+#######
+
+
+```{r,include=FALSE,warning = FALSE,message = FALSE}
+# set working directory
+setwd("C:/Users/prralien/Nextcloud/RENK/A_Purco/Thèse_Purco/Ecopath_R/Rpath_fork")
+All_results_sc<-read.csv("All_results_sc.csv")
+```
+```{r}
+colnames(aaa)
+```
+
+
+```{r}
+library(tidyr)
+aa=All_results_sc[!All_results_sc$Group%in%c("Roach_juv","Tench_juv","Macroinvertebrate","Zooplancton",	
+"Phytoplancton","Detritus"),]
+
+aaa=aa[,c(2,36,38)]
+aaaa=aaa%>%pivot_wider(names_from=Group,values_from=prc_scn)
+```
+
+
+```{r}
+aaa[aaa$Common_carp==10&aaa$Pike_perch==7&aaa$Roach==40,]
+```
+
+```{r rpath load, echo = F}
+# Run package
+library(Rpath); library(data.table)
+```
+
+
+#### Ecopath for all scenario
+
+
+```{r groups}
+
+
+#Groups and types for the H10
+
+groups <- c('Common_carp', 
+            'Pike_perch', 
+            'Roach',
+            'Tench', 
+            'Roach_juv', 
+            'Tench_juv', 
+            'Macroinvertebrate', 
+            'Zooplancton', 
+            'Phytoplancton',
+            'Detritus')
+
+types  <- c(rep(0, 8), 1, 2)
+stgroups <- c(rep(0, 10))
+
+REco.params <- create.rpath.params(group = groups, type = types,stgroup=stgroups)
+
+
+## Biomass
+biomass <- c(1.44,
+             0.56,
+             1.34,
+             0.93,
+             0.45,
+             0.16,
+             0.25,
+             0.54,
+             1.92,
+             48.81)
+
+## Production by biomass
+
+pb <- c(1.69,
+        1.52,
+        0.71,
+        0.48,
+        2.00,
+        2.00,
+        14.50,
+        92.43,
+        118.7,
+        NA)
+
+## Consumption by biomass
+
+qb <- c(4.93,
+        2.19,
+        5.09,
+        5.18,
+        5.29,
+        5.14,
+        48.33,
+        308.1,
+        rep(NA,2))
+
+REco.params$model[, Biomass := biomass]
+REco.params$model[, PB := pb]
+REco.params$model[, QB := qb]
+
+
+
+#Biomass accumulation and unassimilated consumption
+REco.params$model[, BioAcc  := c(2.28,0.83,0.93,0.43,rep(0, 6))]
+
+## Bio Acc for juv =0
+
+# Unassimilated consumption
+REco.params$model[, Unassim := c(rep(0.2, 6), rep(0.4, 2), rep(0, 2))]
+
+#Detrital Fate
+REco.params$model[, Detritus := c(rep(1, 9), rep(1, 1))]
+
+REco.params$diet[, Common_carp       := c(NA,NA,NA,NA, 0.01, 0.01, 0.18, 0.22,0.12,0.46,NA)]
+                 
+REco.params$diet[, Pike_perch        := c(NA,NA,NA,NA, 0.28, 0.02, 0.12, 0.56,NA,0.02,NA)]
+ 
+REco.params$diet[, Roach             := c(NA,NA,NA,NA,NA,NA, 0.02, 0.25,0.14,0.59,NA)]
+
+REco.params$diet[, Tench             := c(NA,NA,NA,NA,NA,NA, 0.22, 0.12,0.10,0.56,NA)]
+
+REco.params$diet[, Roach_juv         := c(NA,NA,NA,NA,NA,NA, 0.01, 0.20,0.39,0.40,NA)]
+
+REco.params$diet[, Tench_juv         := c(NA,NA,NA,NA,NA,NA, 0.01, 0.15,0.24,0.60,NA)]
+
+REco.params$diet[, Macroinvertebrate := c(NA,NA,NA,NA,NA,NA, 0.08, 0.16,0.35,0.41,NA)]
+
+REco.params$diet[, Zooplancton     := c(NA,NA,NA,NA,NA,NA, NA, 0.11,0.27,0.62,NA)]
+
+REco <- rpath(REco.params, eco.name = 'R Ecosystem')
+
+
+```
+
+```{r}
+REco
+```
+
+
+# Ok For 1 test
+
+```{r}
+# Steps of Rpath to enaR (network) conversion:
+# Set up: pull in group names, count number of living vs. non-living groups
+groups <- as.vector(REco$Group)
+nliving <- nrow(REco.params$model[Type <  2, ])
+ndead   <- nrow(REco.params$model[Type == 2, ])
+
+
+# Calculate consumption values from diet matrix: DC*QB*Biomass
+diet<-REco$DC
+QQ<-matrix(nrow = (nliving + ndead + 1),ncol=nliving)
+for (j in 1:nliving){
+QQ[,j]<-diet[,j]*REco$QB[j]*REco$Biomass[j]
+ }
+# Ignore imports in diet matrix
+QQ<-QQ[1:(nliving+1),]
+
+# Name the consumption matrix
+colnames(QQ)<-groups[1:nliving]
+rownames(QQ)<-groups[1:(nliving+1)]
+# <Deal with discards>
+
+# Calculate flow to detritus (first need to calculate M0 values for each node), append to diet matrix
+M0<-REco$PB*(1-REco$EE)
+
+Detritus<-(M0*REco$Biomass+REco$QB*REco$Biomass*REco$Unassim)*REco$DetFate[,1]
+Detritus[(nliving+1)]<-0
+QQ<-cbind(QQ,Detritus)
+
+# Calculate exports: catch, positive biomass accumulation, detrital production
+# Catch<-rowSums(REco$Landings)# No catch
+# Export<-Catch+(ifelse(REco$BA>0,REco$BA*REco$Biomass,0))# No catch
+
+# Export<-(ifelse(REco$BA>0,REco$BA*REco$Biomass,0))
+# Export<-(ifelse(REco$BA>0,REco$BA*REco$Biomass,0)) # why multiplication by biomass??
+Export<-(ifelse(REco$BA>0,REco$BA,0))
+Export<-Export[1:(nliving+ndead)]
+
+# for (i in 1:ndead){
+#   Export[nliving+i]<-REco$PB[(nliving+i)]*REco$Biomass[(nliving+i)]
+# } # Modified
+
+for (i in 1:ndead){
+  Export[nliving+i]<-M0[(nliving+i)]*REco$Biomass[(nliving+i)]
+}
+
+
+# Calculate respiration, assuming detrital groups have 0 respiration
+Resp<-((1-REco$Unassim)*REco$QB-REco$PB)*REco$Biomass
+Resp<-ifelse(Resp>0,Resp,0)
+Resp<-Resp[1:(nliving+ndead)]
+Resp[(nliving+1):(nliving+ndead)]<-0
+
+# Estimate respiration of primary producers: grosspp - netpp
+# gross_net<-4101.9/3281.5
+gross_net<-100/80
+# Net primary production and phytoplankton respiration are respectively 80% and 20% of gross primary production.
+#From Documentation for the Energy Modeling and Analysis eXercise (EMAX) (Link and Methratta, 2006)
+gross<-gross_net*REco$PB[9]*REco$Biomass[9]
+# gross<-REco$PB[9]*REco$Biomass[9]
+Resp[9]<-gross-(REco$PB[9]*REco$Biomass[9])
+
+# Calculate imports: negative biomass accumulation, grosspp
+Import<-abs(ifelse(REco$BA<0,REco$BA*REco$Biomass,0))
+Import[9]<-gross
+Import<-Import[1:(nliving+ndead)]
+
+# Assign biomass values 
+Biomass<-REco$Biomass[1:(nliving+ndead)]
+
+# Pack the model
+
+# install.packages("gdata", repos = "https://packagemanager.posit.co/cran/2023-05-06")
+# update.packages(ask = FALSE)
+
+# remotes::install_github('SEELab/enaR')
+
+# library(enaR)
+
+
+
+orig.network<-enaR::pack(flow = QQ,
+                        input = Import,
+                        export = Export,
+                        living = c(rep(TRUE,nliving),rep(FALSE,ndead)),
+                        respiration = Resp,
+                        storage = Biomass)
+
+
+```
+
+```{r}
+ssCheck(orig.network)
+```
+
+```{r}
+FF <- enaFlow(orig.network)
+```
+
+
+
+
+
+# For 2 test (using BA only)
+
+```{r}
+# Steps of Rpath to enaR (network) conversion:
+# Set up: pull in group names, count number of living vs. non-living groups
+groups <- as.vector(REco$Group)
+nliving <- nrow(REco.params$model[Type <  2, ])
+ndead   <- nrow(REco.params$model[Type == 2, ])
+
+
+# Calculate consumption values from diet matrix: DC*QB*Biomass
+diet<-REco$DC
+QQ<-matrix(nrow = (nliving + ndead + 1),ncol=nliving)
+for (j in 1:nliving){
+QQ[,j]<-diet[,j]*REco$QB[j]*REco$Biomass[j]
+ }
+# Ignore imports in diet matrix
+QQ<-QQ[1:(nliving+1),]
+
+# Name the consumption matrix
+colnames(QQ)<-groups[1:nliving]
+rownames(QQ)<-groups[1:(nliving+1)]
+# <Deal with discards>
+
+# Calculate flow to detritus (first need to calculate M0 values for each node), append to diet matrix
+M0<-REco$PB*(1-REco$EE)
+
+Detritus<-(M0*REco$Biomass+REco$QB*REco$Biomass*REco$Unassim)*REco$DetFate[,1]
+Detritus[(nliving+1)]<-0
+QQ<-cbind(QQ,Detritus)
+
+# Calculate exports: catch, positive biomass accumulation, detrital production
+# Catch<-rowSums(REco$Landings)# No catch
+# Export<-Catch+(ifelse(REco$BA>0,REco$BA*REco$Biomass,0))# No catch
+
+# Export<-(ifelse(REco$BA>0,REco$BA*REco$Biomass,0))
+# Export<-(ifelse(REco$BA>0,REco$BA*REco$Biomass,0)) # why multiplication by biomass??
+Export<-(ifelse(REco$BA>0,REco$BA,0))
+Export<-Export[1:(nliving+ndead)]
+
+# for (i in 1:ndead){
+#   Export[nliving+i]<-REco$PB[(nliving+i)]*REco$Biomass[(nliving+i)]
+# } # Modified
+
+for (i in 1:ndead){
+  Export[nliving+i]<-M0[(nliving+i)]*REco$Biomass[(nliving+i)]
+}
+
+
+# Calculate respiration, assuming detrital groups have 0 respiration
+Resp<-((1-REco$Unassim)*REco$QB-REco$PB)*REco$Biomass
+Resp<-ifelse(Resp>0,Resp,0)
+Resp<-Resp[1:(nliving+ndead)]
+Resp[(nliving+1):(nliving+ndead)]<-0
+
+
+# Estimate respiration of primary producers: grosspp - netpp
+# gross_net<-4101.9/3281.5
+gross_net<-100/80
+# Net primary production and phytoplankton respiration are respectively 80% and 20% of gross primary production.
+#From Documentation for the Energy Modeling and Analysis eXercise (EMAX) (Link and Methratta, 2006)
+gross<-gross_net*REco$PB[9]*REco$Biomass[9]
+
+Resp[9]<-gross-(REco$PB[9]*REco$Biomass[9])
+
+# Calculate imports: negative biomass accumulation, grosspp
+# Import<-abs(ifelse(REco$BA<0,REco$BA*REco$Biomass,0))# why multiplication by biomass??
+Import<-abs(ifelse(REco$BA<0,REco$BA,0))
+Import[9]<-gross
+Import<-Import[1:(nliving+ndead)]
+
+# Assign biomass values 
+Biomass<-REco$Biomass[1:(nliving+ndead)]
+
+# Pack the model
+
+# install.packages("gdata", repos = "https://packagemanager.posit.co/cran/2023-05-06")
+# update.packages(ask = FALSE)
+
+# remotes::install_github('SEELab/enaR')
+
+# library(enaR)
+
+
+
+orig.network<-enaR::pack(flow = QQ,
+                        input = Import,
+                        export = Export,
+                        living = c(rep(TRUE,nliving),rep(FALSE,ndead)),
+                        respiration = Resp,
+                        storage = Biomass)
+
+
+```
+
+
+```{r}
+ssCheck(orig.network)
+```
+
+```{r}
+FF <- enaFlow(orig.network)
+```
+
+
+```{r}
+enaStructure(orig.network)
+```
+
+
+# For 3 test (using NPP)
+
+```{r}
+# Steps of Rpath to enaR (network) conversion:
+# Set up: pull in group names, count number of living vs. non-living groups
+groups <- as.vector(REco$Group)
+nliving <- nrow(REco.params$model[Type <  2, ])
+ndead   <- nrow(REco.params$model[Type == 2, ])
+
+
+# Calculate consumption values from diet matrix: DC*QB*Biomass
+diet<-REco$DC
+QQ<-matrix(nrow = (nliving + ndead + 1),ncol=nliving)
+for (j in 1:nliving){
+QQ[,j]<-diet[,j]*REco$QB[j]*REco$Biomass[j]
+ }
+# Ignore imports in diet matrix
+QQ<-QQ[1:(nliving+1),]
+
+# Name the consumption matrix
+colnames(QQ)<-groups[1:nliving]
+rownames(QQ)<-groups[1:(nliving+1)]
+# <Deal with discards>
+
+# Calculate flow to detritus (first need to calculate M0 values for each node), append to diet matrix
+M0<-REco$PB*(1-REco$EE)
+
+Detritus<-(M0*REco$Biomass+REco$QB*REco$Biomass*REco$Unassim)*REco$DetFate[,1]
+Detritus[(nliving+1)]<-0
+QQ<-cbind(QQ,Detritus)
+
+# Calculate exports: catch, positive biomass accumulation, detrital production
+# Catch<-rowSums(REco$Landings)# No catch
+# Export<-Catch+(ifelse(REco$BA>0,REco$BA*REco$Biomass,0))# No catch
+
+# Export<-(ifelse(REco$BA>0,REco$BA*REco$Biomass,0))
+# Export<-(ifelse(REco$BA>0,REco$BA*REco$Biomass,0)) # why multiplication by biomass??
+Export<-(ifelse(REco$BA>0,REco$BA,0))
+Export<-Export[1:(nliving+ndead)]
+
+# for (i in 1:ndead){
+#   Export[nliving+i]<-REco$PB[(nliving+i)]*REco$Biomass[(nliving+i)]
+# } # Modified
+
+for (i in 1:ndead){
+  Export[nliving+i]<-M0[(nliving+i)]*REco$Biomass[(nliving+i)]-sum(Export[1:nliving])
+}
+
+
+# Calculate respiration, assuming detrital groups have 0 respiration
+Resp<-((1-REco$Unassim)*REco$QB-REco$PB)*REco$Biomass
+Resp<-ifelse(Resp>0,Resp,0)
+Resp<-Resp[1:(nliving+ndead)]
+Resp[(nliving+1):(nliving+ndead)]<-0
+
+
+# Estimate respiration of primary producers: grosspp - netpp
+
+# gross_net<-4101.9/3281.5
+# gross_net<-100/80
+# Net primary production and phytoplankton respiration are respectively 80% and 20% of gross primary production.
+#From Documentation for the Energy Modeling and Analysis eXercise (EMAX) (Link and Methratta, 2006)
+
+# gross<-gross_net*REco$PB[9]*REco$Biomass[9]
+# gross<-REco$PB[9]*REco$Biomass[9]
+gross<-0
+# Resp[9]<-gross-(REco$PB[9]*REco$Biomass[9])
+Resp[9]<-0
+
+# Calculate imports: negative biomass accumulation, grosspp
+# Import<-abs(ifelse(REco$BA<0,REco$BA*REco$Biomass,0))# why multiplication by biomass??
+# Import<-abs(ifelse(REco$BA<0,REco$BA,0))
+
+Import<-abs(ifelse(REco$BA<0,REco$BA,0))
+# Import<- REco$PB*REco$Biomass
+# Import[9]<-REco$PB[9]*REco$Biomass[9]
+Import[9]<-gross
+Import<-Import[1:(nliving+ndead)]
+
+# Assign biomass values 
+Biomass<-REco$Biomass[1:(nliving+ndead)]
+
+# Pack the model
+
+# install.packages("gdata", repos = "https://packagemanager.posit.co/cran/2023-05-06")
+# update.packages(ask = FALSE)
+
+# remotes::install_github('SEELab/enaR')
+
+library(enaR)
+
+
+
+orig.network<-enaR::pack(flow = QQ,
+                        input = Import,
+                        export = Export,
+                        living = c(rep(TRUE,nliving),rep(FALSE,ndead)),
+                        respiration = Resp,
+                        storage = Biomass)
+
+
+```
+
+
+```{r}
+ssCheck(orig.network)
+```
+
+```{r}
+enaFlow(orig.network)
+```
+
+```{r}
+enaStructure(orig.network)
+```
+
+```{r}
+Asc=enaAscendency(orig.network)
+Asc
+```
+
+```{r}
+plot(orig.network)
+```
+
+
+######
+# Test enaR: fork
+######
+
+```{r}
+remotes::install_github('https://github.com/Purco/enaR.git')
+
+
+```
+
+
+
+
+
+
+#########
+# Test calculation manualy
+#########
+
+
+```{r}
+# Steps of Rpath to enaR (network) conversion:
+# Set up: pull in group names, count number of living vs. non-living groups
+groups <- as.vector(REco$Group)
+nliving <- nrow(REco.params$model[Type <  2, ])
+ndead   <- nrow(REco.params$model[Type == 2, ])
+
+
+# Calculate consumption values from diet matrix: DC*QB*Biomass
+diet<-REco$DC
+QQ<-matrix(nrow = (nliving + ndead + 1),ncol=nliving)
+for (j in 1:nliving){
+QQ[,j]<-diet[,j]*REco$QB[j]*REco$Biomass[j]
+ }
+# Ignore imports in diet matrix
+QQ<-QQ[1:(nliving+1),]
+
+# Name the consumption matrix
+colnames(QQ)<-groups[1:nliving]
+rownames(QQ)<-groups[1:(nliving+1)]
+# <Deal with discards>
+
+# Calculate flow to detritus (first need to calculate M0 values for each node), append to diet matrix
+M0<-REco$PB*(1-REco$EE)
+
+Detritus<-(M0*REco$Biomass+REco$QB*REco$Biomass*REco$Unassim)*REco$DetFate[,1]
+Detritus[(nliving+1)]<-0
+QQ<-cbind(QQ,Detritus)
+
+# Calculate exports: catch, positive biomass accumulation, detrital production
+# Catch<-rowSums(REco$Landings)# No catch
+# Export<-Catch+(ifelse(REco$BA>0,REco$BA*REco$Biomass,0))# No catch
+
+Export<-(ifelse(REco$BA>0,REco$BA,0))
+Export<-Export[1:(nliving+ndead)]
+
+# for (i in 1:ndead){
+#   Export[nliving+i]<-REco$PB[(nliving+i)]*REco$Biomass[(nliving+i)]
+# } # Modified
+
+for (i in 1:ndead){
+  Export[nliving+i]<-M0[(nliving+i)]*REco$Biomass[(nliving+i)]-sum(Export[1:nliving])
+}
+
+
+# Calculate respiration, assuming detrital groups have 0 respiration
+Resp<-((1-REco$Unassim)*REco$QB-REco$PB)*REco$Biomass
+Resp<-ifelse(Resp>0,Resp,0)
+Resp<-Resp[1:(nliving+ndead)]
+Resp[(nliving+1):(nliving+ndead)]<-0
+
+
+# Estimate respiration of primary producers: grosspp - netpp
+
+# gross_net<-4101.9/3281.5
+# From Documentation for the Energy Modeling and Analysis eXercise (EMAX) (Link and Methratta, 2006)
+# gross_net<-100/80
+# Net primary production and phytoplankton respiration are respectively 80% and 20% of gross primary production.
+
+# gross<-gross_net*REco$PB[9]*REco$Biomass[9]
+
+# Resp[9]<-gross-(REco$PB[9]*REco$Biomass[9])
+Resp[9]<-0
+
+# Calculate imports: negative biomass accumulation, grosspp
+# Import<-abs(ifelse(REco$BA<0,REco$BA*REco$Biomass,0))# why multiplication by biomass??
+# Import<-abs(ifelse(REco$BA<0,REco$BA,0))
+
+Import<-abs(ifelse(REco$BA<0,REco$BA,0))
+# Import<- REco$PB*REco$Biomass
+# Import[9]<-REco$PB[9]*REco$Biomass[9]
+# Import[9]<-gross
+Import[9]<-0
+Import<-Import[1:(nliving+ndead)]
+
+# Assign biomass values 
+Biomass<-REco$Biomass[1:(nliving+ndead)]
+```
+
+```{r}
+### Param
+# Sum of all consumption
+T.QQ=sum(QQ[,c(1:9)])
+T.QQ
+# Sum of all export
+T.e=sum(e)
+T.e
+# Sum of all respiration
+T.r=sum(r)
+T.r
+#Sum of all flows into detritus
+T.d=sum(QQ[,10])
+T.d
+# sum of all production
+T.Prod=sum(REco$PB[c(1:9)]*REco$Biomass[c(1:9)])
+T.Prod
+
+# Calculated total net primary production
+T.netPP=sum(REco$PB[c(9)]*REco$Biomass[c(9)])
+T.netPP
+```
+
+
+```{r}
+# Pack the model
+
+# install.packages("gdata", repos = "https://packagemanager.posit.co/cran/2023-05-06")
+# update.packages(ask = FALSE)
+
+# remotes::install_github('SEELab/enaR')
+# 
+# library(enaR)
+# 
+# 
+# 
+# orig.network<-enaR::pack(flow = QQ,
+#                         input = Import,
+#                         export = Export,
+#                         living = c(rep(TRUE,nliving),rep(FALSE,ndead)),
+#                         respiration = Resp,
+#                         storage = Biomass)
+
+
+flow = QQ
+input = Import
+export = Export
+# export[is.na(export)] <- 0
+living = c(rep(TRUE,nliving),rep(FALSE,ndead))
+respiration = Resp
+# respiration[is.na(respiration)] <- 0
+storage = Biomass
+
+##
+F<-flow
+z=input
+r=respiration
+e=export
+output=export+respiration
+y=output
+X=storage
+living=living
+
+##
+
+n <- length(z)
+S <- matrix(NA,nrow=(n+1),ncol=(n+2))
+S[1:n,1:n] = t(F)
+S[1:n,(n+1)]= z
+S[(n+1),1:n] = y
+S[1:n,(n+2)]= X
+S[(n+1),(n+1):(n+2)] = 0
+
+file.name_col=c(names(z),"z","X")
+colnames(S)=file.name_col
+
+file.name_raw=c(names(z),"y")
+row.names(S)=file.name_raw
+
+
+
+```
+
+
+```{r}
+# ENA
+                                      
+Flow <- t(as.matrix(flow)) #flows
+input <- input #inputs
+stor <- storage #storage values
+
+n <- nrow(Flow)      # number of nodes
+I <- diag(1,nrow(Flow),ncol(Flow))          # create identity matrix
+T. <- apply(Flow,1,sum) + input   # input throughflow (assuming steady state)
+# T. <- apply(Flow,1,sum) + output   # input throughflow (assuming steady state)
+
+#compute the intercompartmental flows
+GP <- Flow / T.  #Input perspective
+G <- t(t(Flow) / T.)  #Output perspective
+
+#check and replace NA values with 0 if zero.na
+GP[is.na(GP)] <- 0
+G[is.na(G)] <- 0
+GP[is.infinite(GP)] <- 0
+G[is.infinite(G)] <- 0
+ 
+
+ 
+#compute the integral flows
+library(MASS)
+NP <- ginv((I - GP))
+rownames(NP) <- colnames(NP) <- colnames(GP)
+N <- ginv((I - G))
+rownames(N) <- colnames(N) <- colnames(G)
+
+  ## the ginv function creates noticible numeric error.  I am removing some of it here by rounding
+tol <- 10
+N <- round(N,tol)
+NP <- round(NP,tol)
+
+
+## Total Flows (Szyrmer & Ulanowicz 1987) as implimented in Kay, Graham, & Ulanowicz 1989 "A detailed guide to netwokr analysis"
+
+TF.in <- ((t(NP)-I) %*% ginv(diag(diag(t(NP))))) %*% diag(T.) # total flows - inputs
+TCC <- ginv(diag(T.)) %*% TF.in                       # total contribution coefficients
+rownames(TCC) <- colnames(TCC) <- colnames(NP)
+
+TF.out <-(N-I) %*% ginv(diag(diag(N))) %*% diag(T.)   # total flows - ouptuts
+TDC <- ginv(diag(T.)) %*% TF.out
+rownames(TDC) <- colnames(TDC) <- colnames(N)
+
+  ## Network Statistics ---------------------------------------------
+TST <- sum(T.)  # total system throughflow
+TSTp <- sum(Flow) + sum(input) + sum(output) # total system throughput
+
+Boundary <- sum(input)
+APL <- TST/Boundary  # Average Path Lenght (Finn 1976; aka network
+                      # aggradation, multiplier effect)
+
+# Finn Cycling Index
+p <- as.matrix(rep(1,n),nrow=n)
+dN <- diag(N)
+TSTc <- sum((dN-p)/dN *T.)
+FCI <- TSTc/TSTp
+
+                                        # non-locality (realized)
+  direct <- sum(G %*% input)
+  indirect <- sum((N - I - G) %*% input)
+  ID.F <- indirect/direct
+  BFI <- Boundary/TST
+  DFI <- sum(G %*% input) / TST
+  IFI <- indirect/TST
+                                        # non-locality (idealized)
+  ID.F.O <- sum(N-I-G)/sum(G)
+  ID.F.I <- sum(NP-I-GP)/sum(GP)
+                                        # HMG
+  HMG.O <- ( sd(as.vector(G)) / mean(G) ) / ( sd(as.vector(N)) / mean(N) )
+  HMG.I <- ( sd(as.vector(GP)) / mean(GP) ) / ( sd(as.vector(NP)) / mean(NP) )
+                                        # Amplification
+  AMP.O <- length(which( (N - diag(diag(N))) > 1))
+  AMP.I <- length(which( (NP - diag(diag(NP))) > 1))
+                                        # MODE ANALYSIS
+                                        # This is built from Fath's original MODE program
+  mode0.F <- Boundary                     # boundary flow
+  mode1.F <- sum(ginv(diag(diag(N))) %*% N %*% diag(input) - diag(as.vector(I%*%input))) # internal first passage flow
+  mode2.F <- sum((diag(diag(N))-I) %*% ginv(diag(diag(N))) %*% N %*% diag(input))  # cycled flow
+  mode3.F <- mode1.F                      # dissipative equivalent to mode 1
+  mode4.F <- mode0.F                    # dissipative equivalent to mode 0
+                                        #re-orientation
+  orient <- get.orient()
+  if (orient == 'rc'){
+      G <- t(G)
+      GP <- t(GP)
+      N <- t(N)
+      NP <- t(NP)
+      TDC <- t(TDC)
+  }
+
+
+  # asc <- enaAscendency(x)
+                                        #network statistics
+  ns <- cbind(Boundary,TST,TSTp,APL,FCI,
+              BFI,DFI,IFI,
+              ID.F,ID.F.I,ID.F.O,
+              HMG.I,HMG.O,
+              AMP.I,AMP.O,
+              mode0.F,mode1.F,mode2.F,mode3.F,mode4.F)
+
+                                        #output
+  return(list('T'=T.,'G'=G,'GP'=GP,'N'=N,'NP'=NP, 'TCC'=TCC, 'TDC'=TDC, 'ns'=ns))
+}
+```
+
+
+
+
+
+```{r}
+length(F)
+```
+
+
+```{r}
+
+
+
+write.nea <- function(x, file.name,sep=','){
+                                        # Check for network class
+  if (class(x) != 'network'){warning('x is not a network class object')}
+  U <- unpack(x)  # unpack data
+  n <- length(U$z)
+  S <- matrix(NA,nrow=(n+1),ncol=(n+2))
+  S[1:n,1:n] = t(U$F)
+  S[1:n,(n+1)]= U$z
+  S[(n+1),1:n] = U$y
+  S[1:n,(n+2)]= U$X
+  S[(n+1),(n+1):(n+2)] = 0
+                                        # write file
+  write.table(S,file=file.name,row.names=FALSE,col.names=FALSE,sep=sep) 
+                                        # return composite system matrix to workspace 
+  return(S)
+}
+```
+
+
+
+## Check if the model is balance or not
+```{r}
+ssCheck <- function(x,tol=5,more=FALSE,zero.na=TRUE){
+                                        #Check for network class object
+  if (class(x) != 'network'){warning('x is not a network class object')}
+  T. <- as.extended(x) #convert to extended format
+  if (zero.na){T.[is.na(T.)] <- 0}
+  n <- network.size(x) #get the number of nodes
+  Tin <- apply(T.[,1:n],2,sum) #in throughflow
+  Tout <- apply(T.[1:n,],1,sum) #out throughflow
+  d <- abs(Tin - Tout) # SSerror difference
+  pe <- (d / Tout)*100 # SSerror as percent of total throughflow
+                                        #
+  if(more==FALSE){
+    return(all(pe < tol)) #returns a logical indicating that all node differences are less than tolerance (==TRUE)
+  }else{
+    return(list("ss"=all(pe < tol),"Tin"=Tin,"Tout"=Tout,"perror"=pe))
+  }
+}
+```
+
+```{r}
+enaFlow <- function(x,zero.na=TRUE,balance.override=FALSE){
+                                        #Check for network class
+  if (class(x) != 'network'){warning('x is not a network class object')}
+
+                                        #Check for balancing
+  if (balance.override){}else{
+    if (any(list.network.attributes(x) == 'balanced') == FALSE){x%n%'balanced' <- ssCheck(x)}
+    if (x%n%'balanced' == FALSE){warning('Model is not balanced'); stop}
+  }
+
+                                        # unpack model
+  Flow <- t(as.matrix(x,attrname = 'flow')) #flows
+  input <- x%v%'input' #inputs
+  stor <- x%v%'storage' #storage values
+
+  n <- nrow(Flow)      # number of nodes
+  I <- diag(1,nrow(Flow),ncol(Flow))          # create identity matrix
+  T. <- apply(Flow,1,sum) + input;   # input throughflow (assuming steady state)
+
+                                        #compute the intercompartmental flows
+  GP <- Flow / T.  #Input perspective
+  G <- t(t(Flow) / T.)  #Output perspective
+
+                                        #check and replace NA values with 0 if zero.na
+  if (zero.na){
+    GP[is.na(GP)] <- 0
+    G[is.na(G)] <- 0
+    GP[is.infinite(GP)] <- 0
+    G[is.infinite(G)] <- 0
+  }
+
+                                        #compute the integral flows
+  NP <- ginv((I - GP))
+  rownames(NP) <- colnames(NP) <- colnames(GP)
+  N <- ginv((I - G))
+  rownames(N) <- colnames(N) <- colnames(G)
+
+  ## the ginv function creates noticible numeric error.  I am removing some of it here by rounding
+  tol <- 10
+  N <- round(N,tol)
+  NP <- round(NP,tol)
+
+
+  ## Total Flows (Szyrmer & Ulanowicz 1987) as implimented in Kay, Graham, & Ulanowicz 1989 "A detailed guide to netwokr analysis"
+
+  TF.in <- ((t(NP)-I) %*% ginv(diag(diag(t(NP))))) %*% diag(T.) # total flows - inputs
+  TCC <- ginv(diag(T.)) %*% TF.in                       # total contribution coefficients
+  rownames(TCC) <- colnames(TCC) <- colnames(NP)
+
+  TF.out <-(N-I) %*% ginv(diag(diag(N))) %*% diag(T.)   # total flows - ouptuts
+  TDC <- ginv(diag(T.)) %*% TF.out
+  rownames(TDC) <- colnames(TDC) <- colnames(N)
+
+  ## Network Statistics ---------------------------------------------
+  TST <- sum(T.)  # total system throughflow
+  TSTp <- sum(Flow) + sum(x%v%'input') + sum(x%v%'output') # total system throughput
+
+  Boundary <- sum(input)
+  APL <- TST/Boundary  # Average Path Lenght (Finn 1976; aka network
+                      # aggradation, multiplier effect)
+
+                                        # Finn Cycling Index
+  p <- as.matrix(rep(1,n),nrow=n)
+  dN <- diag(N)
+  TSTc <- sum((dN-p)/dN *T.)
+  FCI <- TSTc/TST
+
+                                        # non-locality (realized)
+  direct <- sum(G %*% input)
+  indirect <- sum((N - I - G) %*% input)
+  ID.F <- indirect/direct
+  BFI <- Boundary/TST
+  DFI <- sum(G %*% input) / TST
+  IFI <- indirect/TST
+                                        # non-locality (idealized)
+  ID.F.O <- sum(N-I-G)/sum(G)
+  ID.F.I <- sum(NP-I-GP)/sum(GP)
+                                        # HMG
+  HMG.O <- ( sd(as.vector(G)) / mean(G) ) / ( sd(as.vector(N)) / mean(N) )
+  HMG.I <- ( sd(as.vector(GP)) / mean(GP) ) / ( sd(as.vector(NP)) / mean(NP) )
+                                        # Amplification
+  AMP.O <- length(which( (N - diag(diag(N))) > 1))
+  AMP.I <- length(which( (NP - diag(diag(NP))) > 1))
+                                        # MODE ANALYSIS
+                                        # This is built from Fath's original MODE program
+  mode0.F <- Boundary                     # boundary flow
+  mode1.F <- sum(ginv(diag(diag(N))) %*% N %*% diag(input) - diag(as.vector(I%*%input))) # internal first passage flow
+  mode2.F <- sum((diag(diag(N))-I) %*% ginv(diag(diag(N))) %*% N %*% diag(input))  # cycled flow
+  mode3.F <- mode1.F                      # dissipative equivalent to mode 1
+  mode4.F <- mode0.F                    # dissipative equivalent to mode 0
+                                        #re-orientation
+  orient <- get.orient()
+  if (orient == 'rc'){
+      G <- t(G)
+      GP <- t(GP)
+      N <- t(N)
+      NP <- t(NP)
+      TDC <- t(TDC)
+  }
+
+
+  # asc <- enaAscendency(x)
+                                        #network statistics
+  ns <- cbind(Boundary,TST,TSTp,APL,FCI,
+              BFI,DFI,IFI,
+              ID.F,ID.F.I,ID.F.O,
+              HMG.I,HMG.O,
+              AMP.I,AMP.O,
+              mode0.F,mode1.F,mode2.F,mode3.F,mode4.F)
+
+                                        #output
+  return(list('T'=T.,'G'=G,'GP'=GP,'N'=N,'NP'=NP, 'TCC'=TCC, 'TDC'=TDC, 'ns'=ns))
+}
+```
+
+########
+########
+
+# Test for productivity hypothesis (H10 EWE software)
+
+
+```{r, echo = F}
+# Install package
+
+
+# remove.packages("Rpath")
+# remotes::install_github('Purco/Rpath_fork')
+```
+
+```{r rpath load, echo = F}
+# Run package
+# library(Rpath); library(data.table)
+```
+
+
+```{r}
+# Run package for combination
+# library(gtools) 
+# Generate all possible combinations of 4 values that sum to 100
+combinations <- permutations(n = 100, r = 4, v = 1:100)
+
+# Filter valid combinations (sum to 100)
+valid_combinations <- subset(combinations, rowSums(combinations) == 100)
+
+valid_combinations <-as.data.frame(valid_combinations)
+
+valid_combinations$scenario<-paste("scenario",rownames(valid_combinations),sep="")
+
+library(tidyverse)
+
+valid_combinations=valid_combinations %>%pivot_longer(cols=c(1:4),names_to = "sp_scn", values_to = "prc_scn")
+
+data.valid_combinations=as.data.frame(valid_combinations)
+
+list_combinations=list()
+scenarios<-unique(data.valid_combinations$scenario)
+
+for (i in 1:length(scenarios)) {
+ list_combinations[[i]]=subset(data.valid_combinations,scenario==scenarios[i])
+}
+
+
+list_comb=list_combinations
+```
+
+
+# Add data
+
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+# define list of packages in vector
+package<-c("readxl")
+
+# define function to load all packages
+instal<-function(x){ 
+  for(pkg in x){
+  instal=require(pkg, character.only = T) # load package x 
+}}
+instal(package) # load list of packages in vector package
+
+```
+
+```{r,include=FALSE,warning = FALSE,message = FALSE}
+# set working directory
+# setwd("C:/Users/prralien/Nextcloud/RENK/A_Purco/Thèse_Purco/Ecopath_R/Rpath_fork")
+```
+
+
+```{r,include=FALSE,warning = FALSE,message = FALSE}
+# Import data
+data_ini.ad<-read_excel("Stocking_Hypothesis_ad.xlsx",sheet = 1)
+data_ini.juv<-read_excel("Stocking_Hypothesis_juv.xlsx",sheet = 1)
+data_ini.Rgroup<-read_excel("Stocking_Hypothesis_Rgroup.xlsx",sheet = 1)
+```
+
+
+```{r}
+list_comb.d=list()
+for (i in 1:length(scenarios)) {
+ list_comb.d[[i]]=cbind(data_ini.ad,list_comb[[i]])
+}
+
+for (i in 1:length(scenarios)) {
+ list_comb.d[[i]]=rbind(list_comb.d[[i]],data_ini.juv)
+}
+```
+
+
+####
+
+# Calcul
+```{r}
+for (i in 1:length(scenarios)) {
+
+# For adult group
+
+list_comb.d[[i]]$WT_Stk=list_comb.d[[i]]$prc_scn/100*list_comb.d[[i]]$Stocking_Tot #Calcul initial biomass by percentage in sceanrio (Stocking total fix)
+
+list_comb.d[[i]]$Nb_Stk=list_comb.d[[i]]$WT_Stk/list_comb.d[[i]]$Wi_Stk #Calcul initial number of species
+
+list_comb.d[[i]]$Wf_F=list_comb.d[[i]]$Wi_Stk*exp((list_comb.d[[i]]$SGR*list_comb.d[[i]]$Duration)/100)   #Calcul final Weight mean by SGR and duration (= 270 day)
+
+list_comb.d[[i]]$Nb_F=(1-list_comb.d[[i]]$Mortality/100)*list_comb.d[[i]]$Nb_Stk #Calcul final number by mortality rate
+
+list_comb.d[[i]]$WT_F=list_comb.d[[i]]$Nb_F*list_comb.d[[i]]$Wf_F #Calcul final biomass
+
+# For juvenil group
+
+list_comb.d[[i]]$Wf_F[5]=4.30 #Fix initial weight of Roach_juv 
+list_comb.d[[i]]$Wf_F[6]=5.60 #Fix initial weight of Tench_juv 
+
+list_comb.d[[i]]$Nb_F[5]=list_comb.d[[i]]$Nb_Stk[3]*36 # #Calcul final number of Roach-juv by multiplying the number of adults by 36 (fix including mortality ) 
+list_comb.d[[i]]$Nb_F[6]=list_comb.d[[i]]$Nb_Stk[4]*36 # #Calcul final number of Tench-juv by multiplying the number of adults by 36 (fix including mortality ) 
+
+list_comb.d[[i]]$WT_F[5]=list_comb.d[[i]]$Wf_F[5]*list_comb.d[[i]]$Nb_F[5] #Calcul final biomass of Roach_juv 
+list_comb.d[[i]]$WT_F[6]=list_comb.d[[i]]$Wf_F[6]*list_comb.d[[i]]$Nb_F[6]   #Calcul final biomass of Tench_juv
+
+list_comb.d[[i]]$Prc_F=list_comb.d[[i]]$WT_F/sum(list_comb.d[[i]]$WT_F)*100 #Calcul final percentage by species
+
+list_comb.d[[i]]$Rdt.net=((list_comb.d[[i]]$WT_F-list_comb.d[[i]]$WT_Stk)/1000)/0.1 # Yield net kg/ha (by pond surface 0.1 ha)
+
+# Duplicate the scenario name
+list_comb.d[[i]]$scenario[c(5:6)]=list_comb.d[[i]]$scenario[1]
+
+list_comb.d[[i]]$Z=-(log(list_comb.d[[i]]$Nb_F/list_comb.d[[i]]$Nb_Stk))#Calcul Z
+
+list_comb.d[[i]]$Nb.mean=(list_comb.d[[i]]$Nb_Stk-list_comb.d[[i]]$Nb_F)/list_comb.d[[i]]$Z#Calcul mean number
+
+list_comb.d[[i]]$W.mean=(list_comb.d[[i]]$Wi_Stk+list_comb.d[[i]]$Wf_F)/2 #Calcul mean weight
+
+# Calcul mean biomass for adult group
+list_comb.d[[i]]$B.g=list_comb.d[[i]]$Nb.mean*list_comb.d[[i]]$W.mean
+# Calcul mean biomass for juvenil group
+list_comb.d[[i]]$B.g[5]=list_comb.d[[i]]$WT_F[5]/2 #Calcul mean biomass of Roach_juv 
+list_comb.d[[i]]$B.g[6]=list_comb.d[[i]]$WT_F[6]/2 #Calcul mean biomass of Tench_juv
+
+
+list_comb.d[[i]]$B.g.m2=list_comb.d[[i]]$B.g/1000 #Calcul mean biomass in g/m2
+
+list_comb.d[[i]]$B_DW=list_comb.d[[i]]$B.g.m2*list_comb.d[[i]]$DW_rate #Calcul mean biomass in dry weight
+
+list_comb.d[[i]]$BA.g=list_comb.d[[i]]$WT_F-list_comb.d[[i]]$WT_Stk #Calcul biomass accumulation
+
+#Calcul P:B for adult group
+list_comb.d[[i]]$`P/B`=list_comb.d[[i]]$BA.g/list_comb.d[[i]]$B.g+list_comb.d[[i]]$Z
+
+#Calcul P:B for juv group
+list_comb.d[[i]]$`P/B`[5]=list_comb.d[[i]]$BA.g[5]/list_comb.d[[i]]$B.g[5]
+list_comb.d[[i]]$`P/B`[6]=list_comb.d[[i]]$BA.g[6]/list_comb.d[[i]]$B.g[6]
+
+list_comb.d[[i]]$Bacc.g.m2=list_comb.d[[i]]$BA.g/1000 # Calcul Biomass acc in g/m2
+
+# Calcul Biomass accumulate in dry weight
+list_comb.d[[i]]$Baacc_DW=list_comb.d[[i]]$Bacc.g.m2*list_comb.d[[i]]$DW_rate
+
+}
+
+```
+
+
+```{r}
+# Add resource group
+for (i in 1:length(scenarios)) {
+ list_comb.d[[i]]=rbind(list_comb.d[[i]],data_ini.Rgroup)
+ list_comb.d[[i]]$scenario[c(7:10)]=list_comb.d[[i]]$scenario[1]
+}
+
+```
+
+
+```{r}
+list_comb.d.all=list_comb.d
+```
+
+```{r}
+# Put in dataframe
+
+All_data=do.call(rbind.data.frame,list_comb.d.all)
+```
+
+
+#### Ecopath for all scenario
+
+
+```{r groups}
+
+results_list <- list()
+for (i in 1:length(scenarios)) {
+
+#Groups and types for the H10
+
+groups <- c('Common_carp', 
+            'Pike_perch', 
+            'Roach',
+            'Tench', 
+            'Roach_juv', 
+            'Tench_juv', 
+            'Macroinvertebrate', 
+            'Zooplancton', 
+            'Phytoplancton',
+            'Detritus')
+
+types  <- c(rep(0, 8), 1, 2)
+stgroups <- c(rep(0, 10))
+
+REco.params <- create.rpath.params(group = groups, type = types,stgroup=stgroups)
+
+REco.params$model[, Biomass := All_data[All_data$scenario==scenarios[i],]$B_DW]
+
+REco.params$model[, PB := All_data[All_data$scenario==scenarios[i],]$`P/B`]
+
+REco.params$model[, QB := All_data[All_data$scenario==scenarios[i],]$`C/B`]
+
+#Biomass accumulation 
+REco.params$model[, BioAcc  := c(All_data[All_data$scenario==scenarios[i],]$Baacc_DW[c(1:4)],rep(0, 6))]
+## Bio Acc for juv =0
+
+# Unassimilated consumption
+REco.params$model[, Unassim := c(rep(0.2, 6), rep(0.4, 2), rep(0, 2))]
+
+#Detrital Fate
+REco.params$model[, Detritus := c(rep(1, 9), rep(1, 1))]
+
+REco.params$diet[, Common_carp       := c(NA,NA,NA,NA, 0.01, 0.01, 0.18, 0.22,0.12,0.46,NA)]
+                 
+REco.params$diet[, Pike_perch        := c(NA,NA,NA,NA, 0.28, 0.02, 0.12, 0.56,NA,0.02,NA)]
+ 
+REco.params$diet[, Roach             := c(NA,NA,NA,NA,NA,NA, 0.02, 0.25,0.14,0.59,NA)]
+
+REco.params$diet[, Tench             := c(NA,NA,NA,NA,NA,NA, 0.22, 0.12,0.10,0.56,NA)]
+
+REco.params$diet[, Roach_juv         := c(NA,NA,NA,NA,NA,NA, 0.01, 0.20,0.39,0.40,NA)]
+
+REco.params$diet[, Tench_juv         := c(NA,NA,NA,NA,NA,NA, 0.01, 0.15,0.24,0.60,NA)]
+
+REco.params$diet[, Macroinvertebrate := c(NA,NA,NA,NA,NA,NA, 0.08, 0.16,0.35,0.41,NA)]
+
+REco.params$diet[, Zooplancton     := c(NA,NA,NA,NA,NA,NA, NA, 0.11,0.27,0.62,NA)]
+
+REco <- rpath(REco.params, eco.name = 'R Ecosystem')
+
+results_list[[i]]=cbind(data.frame(REco[c(4:10)]),data.frame(Scena = rep(scenarios[i], 10)))
+}
+
+All_results=do.call(rbind.data.frame,results_list)
+
+All_results_sc=cbind(All_results,All_data)
+
+
+```
+
+
+```{r}
+# write.csv(All_results_sc,"All_results_sc.csv")
+```
+
+```{r}
+library(stringr)
+All_results_sc$scena1 <- str_extract(All_results_sc$Scena, "\\d+$")
+```
+
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(All_results_sc[All_results_sc$Group=="Macroinvertebrate",],aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    # axis.text.x = element_text(color="black",size = 13,angle=30,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Macroinvertebrate")
+
+```
+
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(All_results_sc[All_results_sc$Group=="Zooplancton",],aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    # axis.text.x = element_text(color="black",size = 13,angle=30,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Zooplancton")
+
+```
+
+
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(All_results_sc[All_results_sc$Group=="Phytoplancton",],aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    # axis.text.x = element_text(color="black",size = 13,angle=30,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Phytoplancton")
+
+```
+
+
+
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(All_results_sc[All_results_sc$Group=="Detritus",],aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    # axis.text.x = element_text(color="black",size = 13,angle=30,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Detritus")
+
+```
+
+
+
+# Filtering
+
+```{r}
+MIB=All_results_sc[All_results_sc$Group == "Macroinvertebrate" & All_results_sc$EE <= 1, ]
+```
+
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(MIB,aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    # axis.text.x = element_text(color="black",size = 13,angle=30,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Macroinvertebrate")
+
+```
+
+
+```{r}
+MIB_sel=MIB$scenario
+```
+
+
+
+```{r}
+# df[df$Colonne_A %in% vecteur_B, ]
+```
+
+
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(All_results_sc[All_results_sc$scenario %in% MIB_sel& All_results_sc$Group=="Zooplancton",],aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    # axis.text.x = element_text(color="black",size = 13,angle=30,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Zooplancton")
+
+```
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(All_results_sc[All_results_sc$scenario %in% MIB_sel&All_results_sc$Group=="Phytoplancton",],aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    # axis.text.x = element_text(color="black",size = 13,angle=30,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Phytoplancton")
+
+```
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(All_results_sc[All_results_sc$scenario %in% MIB_sel&All_results_sc$Group=="Detritus",],aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    # axis.text.x = element_text(color="black",size = 13,angle=30,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Detritus")
+
+```
+
+
+# Select scenario
+
+
+```{r}
+# write.csv(All_results_sc,"All_results_sc.csv")
+```
+
+```{r,include=FALSE,warning = FALSE,message = FALSE}
+# Import data
+All_results_sc<-read.csv("All_results_sc.csv")
+```
+
+
+```{r}
+library(stringr)
+All_results_sc$scena1 <- str_extract(All_results_sc$Scena, "\\d+$")
+```
+
+```{r}
+MIB=All_results_sc[All_results_sc$Group == "Macroinvertebrate" & All_results_sc$EE <= 1, ]
+
+All_results_sc.select=All_results_sc[All_results_sc$scenario %in% MIB_sel,]
+```
+
+
+
+```{r}
+Carp_scn <- All_results_sc.select %>%
+  filter(Group == "Common_carp") %>%
+  group_by(prc_scn) %>%
+  summarise(n = n())%>%mutate(percent =round( n/sum(n)*100,2))
+```
+
+# Carp 5%
+```{r}
+Carp5 =All_results_sc.select[All_results_sc.select$Group=="Common_carp"&All_results_sc.select$prc_scn==5,]$scenario
+```
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(All_results_sc.select[All_results_sc.select$scenario %in% Carp5&All_results_sc.select$Group=="Zooplancton",],aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    # axis.text.x = element_text(color="black",size = 13,angle=30,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Zooplancton",title = "5%")
+
+```
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(All_results_sc.select[All_results_sc.select$scenario %in% Carp5&All_results_sc.select$Group=="Macroinvertebrate",],aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    # axis.text.x = element_text(color="black",size = 13,angle=30,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Macroinvertebrate",title = "5%")
+
+```
+
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(All_results_sc.select[All_results_sc.select$scenario %in% Carp5&All_results_sc.select$Group=="Phytoplancton",],aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    # axis.text.x = element_text(color="black",size = 13,angle=30,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Phytoplancton",title = "5%")
+
+```
+
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(All_results_sc.select[All_results_sc.select$scenario %in% Carp5&All_results_sc.select$Group=="Detritus",],aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    # axis.text.x = element_text(color="black",size = 13,angle=30,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Detritus",title = "5%")
+
+```
+
+
+
+# Carp 10%
+```{r}
+Carp10 =All_results_sc.select[All_results_sc.select$Group=="Common_carp"&All_results_sc.select$prc_scn==10,]$scenario
+```
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(All_results_sc.select[All_results_sc.select$scenario %in% Carp10&All_results_sc.select$Group=="Zooplancton",],aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    # axis.text.x = element_text(color="black",size = 13,angle=30,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Zooplancton",title = "10%")
+
+```
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(All_results_sc.select[All_results_sc.select$scenario %in% Carp10&All_results_sc.select$Group=="Macroinvertebrate",],aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    # axis.text.x = element_text(color="black",size = 13,angle=30,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Macroinvertebrate",title = "10%")
+
+```
+
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(All_results_sc.select[All_results_sc.select$scenario %in% Carp10&All_results_sc.select$Group=="Phytoplancton",],aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    # axis.text.x = element_text(color="black",size = 13,angle=30,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Phytoplancton",title = "10%")
+
+```
+
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(All_results_sc.select[All_results_sc.select$scenario %in% Carp10&All_results_sc.select$Group=="Detritus",],aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    # axis.text.x = element_text(color="black",size = 13,angle=30,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Detritus",title = "10%")
+
+```
+
+
+
+
+
+# Carp 15-16-17%
+```{r}
+Carp15 =All_results_sc.select[All_results_sc.select$Group=="Common_carp"&All_results_sc.select$prc_scn>=15,]$scenario
+```
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(All_results_sc.select[All_results_sc.select$scenario %in% Carp15&All_results_sc.select$Group=="Zooplancton",],aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    # axis.text.x = element_text(color="black",size = 13,angle=30,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Zooplancton",title = "Sup15%")
+
+```
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(All_results_sc.select[All_results_sc.select$scenario %in% Carp15&All_results_sc.select$Group=="Macroinvertebrate",],aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    # axis.text.x = element_text(color="black",size = 13,angle=30,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Macroinvertebrate",title = "Sup15%")
+
+```
+
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(All_results_sc.select[All_results_sc.select$scenario %in% Carp15&All_results_sc.select$Group=="Phytoplancton",],aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    # axis.text.x = element_text(color="black",size = 13,angle=30,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Phytoplancton",title = "Sup15%")
+
+```
+
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(All_results_sc.select[All_results_sc.select$scenario %in% Carp15&All_results_sc.select$Group=="Detritus",],aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    # axis.text.x = element_text(color="black",size = 13,angle=30,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Detritus",title = "Sup15%")
+
+```
+
+# Filter by EE detritus
+
+```{r}
+DET=All_results_sc.select[All_results_sc.select$Group == "Detritus" & All_results_sc.select$EE >= 0.448, ]
+DET.scn=unique(DET$scenario)
+```
+
+```{r}
+Det.data =All_results_sc.select[All_results_sc.select$scenario %in% DET.scn,]
+
+Det.data.sc=Det.data%>%select(Group,scenario,prc_scn)%>%pivot_wider(names_from = Group,values_from = prc_scn)
+```
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(Det.data[Det.data$Group=="Zooplancton",],aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    axis.text.x = element_text(color="black",size = 13,angle=45,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Zooplancton")
+
+```
+
+
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(Det.data[Det.data$Group=="Macroinvertebrate",],aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    axis.text.x = element_text(color="black",size = 13,angle=45,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Macroinvertebrate")
+
+```
+
+
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(Det.data[Det.data$Group=="Phytoplancton",],aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    axis.text.x = element_text(color="black",size = 13,angle=45,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Phytoplancton")
+
+```
+
+```{r,echo=FALSE,warning = FALSE,message = FALSE}
+ggplot(Det.data[Det.data$Group=="Detritus",],aes(x =scena1,y=EE))+
+  geom_point()+
+  theme_bw() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    legend.key = element_blank(),
+    panel.background = element_rect(fill = NA),
+    panel.grid.major = element_line(colour = "grey75",size=0.5),
+    panel.grid.minor = element_line(colour = "grey75",size=0.2),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text = element_text(color="black",size = 12),
+    axis.text = element_text(color="black",size = 13),
+    axis.text.x = element_text(color="black",size = 13,angle=45,hjust=1),
+    axis.title = element_text(color="black",size = 16,face="bold"),
+    legend.title = element_text(color="black",size = 14,face="bold"),
+    legend.text = element_text(color="black",size = 13,face="bold")
+      )+
+  labs(x="Scenario",y="EE_Detritus")
+
+```
+
+
+
+#
+
+### End ecopath
+
+
+
+```{r groups}
+
+# results_list <- list()
+# for (i in 1:length(scenarios)) {
+
+#Groups and types for the H10
+
+groups <- c('Common_carp', 
+            'Pike_perch', 
+            'Roach',
+            'Tench', 
+            'Roach_juv', 
+            'Tench_juv', 
+            'Macroinvertebrate', 
+            'Zooplancton', 
+            'Phytoplancton',
+            'Detritus')
+
+types  <- c(rep(0, 8), 1, 2)
+stgroups <- c(rep(0, 10))
+
+REco.params <- create.rpath.params(group = groups, type = types,stgroup=stgroups)
+
+REco.params$model[, Biomass := All_data[All_data$scenario==scenarios[36314],]$B_DW]
+
+REco.params$model[, PB := All_data[All_data$scenario==scenarios[36314],]$`P/B`]
+
+REco.params$model[, QB := All_data[All_data$scenario==scenarios[36314],]$`C/B`]
+
+#Biomass accumulation 
+REco.params$model[, BioAcc  := c(All_data[All_data$scenario==scenarios[36314],]$Baacc_DW[c(1:4)],rep(0, 6))]
+## Bio Acc for juv =0
+
+# Unassimilated consumption
+REco.params$model[, Unassim := c(rep(0.2, 6), rep(0.4, 2), rep(0, 2))]
+
+#Detrital Fate
+REco.params$model[, Detritus := c(rep(1, 9), rep(1, 1))]
+
+REco.params$diet[, Common_carp       := c(NA,NA,NA,NA, 0.01, 0.01, 0.18, 0.22,0.12,0.46,NA)]
+                 
+REco.params$diet[, Pike_perch        := c(NA,NA,NA,NA, 0.28, 0.02, 0.12, 0.56,NA,0.02,NA)]
+ 
+REco.params$diet[, Roach             := c(NA,NA,NA,NA,NA,NA, 0.02, 0.25,0.14,0.59,NA)]
+
+REco.params$diet[, Tench             := c(NA,NA,NA,NA,NA,NA, 0.22, 0.12,0.10,0.56,NA)]
+
+REco.params$diet[, Roach_juv         := c(NA,NA,NA,NA,NA,NA, 0.01, 0.20,0.39,0.40,NA)]
+
+REco.params$diet[, Tench_juv         := c(NA,NA,NA,NA,NA,NA, 0.01, 0.15,0.24,0.60,NA)]
+
+REco.params$diet[, Macroinvertebrate := c(NA,NA,NA,NA,NA,NA, 0.08, 0.16,0.35,0.41,NA)]
+
+REco.params$diet[, Zooplancton     := c(NA,NA,NA,NA,NA,NA, NA, 0.11,0.27,0.62,NA)]
+
+REco <- rpath(REco.params, eco.name = 'R Ecosystem')
+
+res_all=cbind(data.frame(REco[c(4:10)]),data.frame(Scena = rep(scenarios[36314], 10)))
+print(res_all)
+
+# results_list[[i]]=cbind(data.frame(REco[c(4:10)]),data.frame(Scena = rep(scenarios[36314], 10)))
+# }
+```
+```{r groups}
+#Groups and types for the H10
+
+groups <- c('Common_carp', 
+            'Pike_perch', 
+            'Roach',
+            'Tench', 
+            'Roach_juv', 
+            'Tench_juv', 
+            'Macroinvertebrate', 
+            'Zooplancton', 
+            'Phytoplancton',
+            'Detritus')
+
+types  <- c(rep(0, 8), 1, 2)
+stgroups <- c(rep(0, 10))
+
+REco.params <- create.rpath.params(group = groups, type = types,stgroup=stgroups)
+```
+
+
+
+```{r Model Table sans stanzas}
+REco.params$model[, Biomass := All_data[All_data$scenario==scenarios[36314],]$B_DW]
+
+REco.params$model[, PB := All_data[All_data$scenario==scenarios[36314],]$`P/B`]
+
+REco.params$model[, QB := All_data[All_data$scenario==scenarios[36314],]$`C/B`]
+
+#Biomass accumulation 
+REco.params$model[, BioAcc  := c(All_data[All_data$scenario==scenarios[36314],]$Baacc_DW[c(1:4)],rep(0, 6))]
+## Bio Acc for juv =0
+
+# Unassimilated consumption
+REco.params$model[, Unassim := c(rep(0.2, 6), rep(0.4, 2), rep(0, 2))]
+
+#Detrital Fate
+REco.params$model[, Detritus := c(rep(1, 9), rep(1, 1))]
+```
+
+
+
+```{r diet fill}
+
+REco.params$diet[, Common_carp       := c(NA,NA,NA,NA, 0.01, 0.01, 0.18, 0.22,0.12,0.46,NA)]
+                 
+REco.params$diet[, Pike_perch        := c(NA,NA,NA,NA, 0.28, 0.02, 0.12, 0.56,NA,0.02,NA)]
+ 
+REco.params$diet[, Roach             := c(NA,NA,NA,NA,NA,NA, 0.02, 0.25,0.14,0.59,NA)]
+
+REco.params$diet[, Tench             := c(NA,NA,NA,NA,NA,NA, 0.22, 0.12,0.10,0.56,NA)]
+
+REco.params$diet[, Roach_juv         := c(NA,NA,NA,NA,NA,NA, 0.01, 0.20,0.39,0.40,NA)]
+
+REco.params$diet[, Tench_juv         := c(NA,NA,NA,NA,NA,NA, 0.01, 0.15,0.24,0.60,NA)]
+
+REco.params$diet[, Macroinvertebrate := c(NA,NA,NA,NA,NA,NA, 0.08, 0.16,0.35,0.41,NA)]
+
+REco.params$diet[, Zooplancton     := c(NA,NA,NA,NA,NA,NA, NA, 0.11,0.27,0.62,NA)]
+
+
+```
+
+
+```{r Running ecopath}
+REco <- rpath(REco.params, eco.name = 'R Ecosystem')
+REco[c(4:10)]
+```
+```{r}
+jj=cbind(data.frame(REco[c(4:10)]),data.frame(Scena = rep(scenarios[36314], 10)))
+jj
+```
+
+```{r}
+data.frame(Scena = rep(scenarios[36314], 10))
+```
+
+
+### Model parameters
+ 
+
+
+
+Here are the rest of the columns for the model list.
+```{r Model Table sans stanzas}
+#Model
+## Biomass
+biomass <- c(1.44,
+             0.56,
+             1.34,
+             0.93,
+             0.45,
+             0.16,
+             0.25,
+             0.54,
+             1.92,
+             48.81)
+
+
+```
+
+
+
+
+
+
+
+
+```{r Model Table sans stanzas}
+All_data[All_data$scenario==scenarios[36314],]
+
+## Production by biomass
+
+pb <- c(1.69,
+        1.52,
+        0.71,
+        0.48,
+        2.00,
+        2.00,
+        14.50,
+        92.43,
+        118.7,
+        NA)
+
+## Consumption by biomass
+
+qb <- c(4.93,
+        2.19,
+        5.09,
+        5.18,
+        5.29,
+        5.14,
+        48.33,
+        308.1,
+        rep(NA,2))
+```
+
+
+
+```{r}
+# #Fisheries
+# #Landings
+# fleet <- c(rep(NA, 11))
+# REco.params$model[, Fleet := fleet]
+# 
+# #Discards
+# 
+# fleet.d <- c(rep(NA, 11))
+# REco.params$model[, Fleet.disc := fleet.d]
+```
+
+```{r Model Table sans stanzas}
+#Biomass accumulation 
+REco.params$model[, BioAcc  := c(2.28,0.83,0.93,0.43,rep(0, 6))]
+
+# Unassimilated consumption
+REco.params$model[, Unassim := c(rep(0.2, 6), rep(0.4, 2), rep(0, 2))]
+
+#Detrital Fate
+REco.params$model[, Detritus := c(rep(1, 9), rep(1, 1))]
+# REco.params$model[, Discards := c(rep(0,10))]
+# 
+# #Fisheries
+# #Landings
+# trawl  <- c(rep(0, 4), 0.08, 0, 0.32, 0, 0.09, 0, 0.05, 0.2, rep(0, 10), rep(NA, 3))
+# mid    <- c(rep(0, 12), 0.3, 0.08, 0.02, rep(0, 7), rep(NA, 3))
+# dredge <- c(rep(0, 15), 0.1, 0.5, rep(0, 5), rep(NA, 3))
+# REco.params$model[, Trawlers := trawl]
+# REco.params$model[, Midwater := mid]
+# REco.params$model[, Dredgers := dredge]
+# 
+# #Discards
+# trawl.d  <- c(1e-5, 1e-7, 0.001, 0.001, 0.005, 0.001, 0.009, 0.001, 0.04, 0.001,
+#               0.01, 0.08, 0.001, 0.001, 0.001, rep(0, 7), rep(NA, 3))
+# mid.d    <- c(rep(0, 2), 0.001, 0.001, 0.01, 0.001, 0.01, rep(0, 4), 0.05, 0.05,
+#               0.01, 0.01, rep(0, 7), rep(NA, 3))
+# dredge.d <- c(rep(0, 3), 0.001, 0.05, 0.001, 0.05, 0.001, 0.05, 0.001, 0.01, 0.05,
+#               rep(0, 3), 0.09, 0.01, 1e-4, rep(0, 4), rep(NA, 3))
+# REco.params$model[, Trawlers.disc := trawl.d]
+# REco.params$model[, Midwater.disc := mid.d]
+# REco.params$model[, Dredgers.disc := dredge.d]
+```
+
+```{r Model Table final, echo = F}
+knitr::kable(REco.params$model, 
+             caption = 'Example of completed model list')
+
+```
+
+###Stanza Parameters
+
+
+
+
+###Diet Parameters
+
+Note : 
+eg: REco.params$diet[Group == 'OtherGroundfish', Seabirds := 0.1]
+knitr::kable(REco.params$diet[, list(Group, Seabirds, Whales)])
+NA: import
+
+Here is the completed model parameter file for R Ecosystem:
+
+```{r diet fill}
+
+REco.params$diet[, Common_carp       := c(NA,NA,NA,NA, 0.01, 0.01, 0.18, 0.22,0.12,0.46,NA)]
+                 
+REco.params$diet[, Pike_perch        := c(NA,NA,NA,NA, 0.28, 0.02, 0.12, 0.56,NA,0.02,NA)]
+ 
+REco.params$diet[, Roach             := c(NA,NA,NA,NA,NA,NA, 0.02, 0.25,0.14,0.59,NA)]
+
+REco.params$diet[, Tench             := c(NA,NA,NA,NA,NA,NA, 0.22, 0.12,0.10,0.56,NA)]
+
+REco.params$diet[, Roach_juv         := c(NA,NA,NA,NA,NA,NA, 0.01, 0.20,0.39,0.40,NA)]
+
+REco.params$diet[, Tench_juv         := c(NA,NA,NA,NA,NA,NA, 0.01, 0.15,0.24,0.60,NA)]
+
+REco.params$diet[, Macroinvertebrate := c(NA,NA,NA,NA,NA,NA, 0.08, 0.16,0.35,0.41,NA)]
+
+REco.params$diet[, Zooplancton     := c(NA,NA,NA,NA,NA,NA, NA, 0.11,0.27,0.62,NA)]
+
+
+```
+
+```{r Dietfile Table, echo = F}
+knitr::kable(REco.params$diet, caption = 'Diet parameters for R Ecosystem')
+```
+
+```{r}
+colSums(REco.params$diet[,2:length(REco.params$diet)],na.rm = T)
+
+
+```
+
+
+
+###Pedigree parameters
+Rpath does not currently use pedigrees however, future Rpath extensions will use
+them.  Therefore we include them in the current parameter object. The
+default values are 1 (low confidence).  These defaults are not changed for R
+Ecosystem but can obviously be changed in a similar manner to the other parameter
+files.
+```{r pedigree table, echo = F}
+knitr::kable(REco.params$pedigree, caption = 'Pedigree parameters for R Ecosystem')
+```
+
+## Running Ecopath
+
+
+After creating the parameter object, running ecopath in R is relatively 
+straightforward.  It is just the function `rpath` supplied with the parameter object.
+Additionally, you can supply an ecosystem name for the output.
+
+```{r Running ecopath}
+REco <- rpath(REco.params, eco.name = 'R Ecosystem')
+REco
+```
+
+The output object from `rpath` is an S3 object type called 'Rpath'.  Rpath objects
+are a list of parameters from the mass balance.  However, the `print` function will
+display the same information as the "Basic Estimates" tab from EwE. You will also 
+notice that the `print` function will display whether the model is balanced or not.
+If the model was not balanced, it would list the groups that are not balanced.
+
+You can also display the mortalities associated with each group by supplying the
+argument `morts = T` to the `print` function.
+
+```{r Ecopath morts}
+print(REco, morts = T)
+```
+
+Note that if you wish to save the `print` output you need to use the function
+`write.rpath`.  This function will also accept the argument 'morts = T'.
+
+The generic function `summary` will display some summary statistics on the model
+as well as a list of attributes you can access.  To access any of the other 
+attributes simply use the standard list notation.
+
+```{r Ecopath summaries}
+summary(REco)
+REco$TL
+```
+
+One of the advantages of R is its graphical ability.  Users can feel free to develop
+their own graphical routines for the Rpath outputs.  However, we have included
+a basic food web plot.  The routine can include fisheries, display group numbers or 
+names, and even highlight a particular group.
+
+```{r Food Web Plots, fig.align = 'center', fig.height = 7, fig.width = 7}
+webplot(REco)
+webplot(REco, labels = T)
+# webplot(REco, fleets = T, highlight = 'AduRoundfish1')
+```
+
+
+####
+
+
+```{r}
+for (i in 1:nrow(valid_combinations)) {
+ list_combinations[[i]]=subset(valid_combinations,scenario==scenarios[i])
+}
+```
+
+
+```{r}
+for (i in 1:length(scenarios)) {
+     
+list_comb[[1]]=t(list_comb[[1]][c(1:4)])
+      
+ dd[[i]]$rS_d=0
+       
+       dd[[i]]$rvol.sum.c=0
+       dd[[i]]$rH_d=0
+       
+       dd[[i]]$rdvol.sum=0
+       dd[[i]]$rA_d=0
+}
+
+```
+
+
+
+
+```{r}
+for (i in 1:length(dd)) {
+       dd[[i]]$rvol.sum=0
+       dd[[i]]$rS_d=0
+       
+       dd[[i]]$rvol.sum.c=0
+       dd[[i]]$rH_d=0
+       
+       dd[[i]]$rdvol.sum=0
+       dd[[i]]$rA_d=0
+}
+
+```
+
+
+
+```{r,include=F,warning=F, error=FALSE, message=F}
+data_1=data %>% group_by(year,espece,model,sc.clim, CO2, prop.y,GRECO.sim,sc.g,d.strss,Tm,vol.sum.c)%>%tally()%>%dplyr::select(-n)
+
+a=data_1
+a$pj=paste(a$GRECO.sim,a$sc.g,a$espece,a$prop.y,a$sc.clim,a$CO2,a$model,sep = "_")
+
+b=unique(a$pj)
+
+c=list()
+
+for (i in 1:length(b)) {
+  c[[i]]=subset(a,pj==b[i])
+}
+
+
+an=c("2020","2030","2040","2050","2060","2070","2080","2090","2095")
+an1=as.numeric(an)
+g=c
+
+for (i in 1:length(g)) {
+  g[[i]]=g[[i]][g[[i]]$year%in%an1,]
+}
+
+cc=c
+
+for (i in 1:length(cc)) {
+  cc[[i]]$year=as.numeric(cc[[i]]$year)
+}
+
+
+hh=g
+for (i in 1:length(hh)) {
+       hh[[i]]$d.strssm=0
+       hh[[i]]$Tmh=0
+}
+
+
+for (i in 1:length(hh)) {
+    for (k in 1:length(an1)){
+    hh[[i]]$d.strssm[k]=mean(cc[[i]]$d.strss[1:(an1[k]-2009)])
+}
+}
+
+for (i in 1:length(hh)) {
+    for (k in 1:length(an1)){
+    hh[[i]]$Tmh[k]=mean(cc[[i]]$Tm[1:(an1[k]-2009)])
+}
+}
+```
+
+
+```{r,include=F,warning=F, error=FALSE, message=F}
+ccc=c
+for (i in 1:length(ccc)) {
+  for (k in 1:(length(ccc[[1]]$year)-3)) {
+
+  ccc[[i]]$volsumc[k]=sum(ccc[[i]]$vol.sum.c[1:k])
+  
+    
+}}
+
+cccc=do.call(rbind.data.frame,ccc)
+cccc=cccc[,-c(9:12)]
+cccc=cccc%>%dplyr::rename(vol.sum.c=volsumc,year.1=year)
+```
+
+
+```{r,include=F,warning=F, error=FALSE, message=F}
+e=do.call(rbind.data.frame,hh)
+e=e[,-c(9:11)]
+data_e=e%>%dplyr::rename(year.1=year,Tm=Tmh,d.strss=d.strssm)
+
+data_ee=merge(data_e,cccc)
+```
+
+
+
+
+
+```{r groups}
+#Groups and types for the H10
+
+groups <- c('Common_carp', 
+            'Pike_perch', 
+            'Roach',
+            'Tench', 
+            'Roach_juv', 
+            'Tench_juv', 
+            'Macroinvertebrate', 
+            'Zooplancton', 
+            'Phytoplancton',
+            'Detritus')
+
+types  <- c(rep(0, 8), 1, 2)
+stgroups <- c(rep(0, 10))
+
+REco.params <- create.rpath.params(group = groups, type = types,stgroup=stgroups)
+```
+
+
+
+
+REco.params now contains a list of 4 objects: model, diet, stanzas, and pedigree.
+The majority of the parameters are populated with NA save those that have logical
+default vaules (i.e 0.66667 for VBGF_d).  
+
+### Model parameters
+ 
+
+```{r blank modfile table, echo=FALSE, results='asis'}
+knitr::kable(REco.params$model, caption = 'Example of the model list created using the 
+             `create.rpath.param` function')
+```
+
+
+Note the use of the operator ':=' to assign values.  This is unique to data tables.
+Eg: REco.params$model[Group %in% c('Seals', 'Megabenthos'), EE := 0.8]
+
+```{r Model Table partial, echo = F}
+knitr::kable(REco.params$model[, list(Group, Type, Biomass, EE)], 
+             caption = 'Example of assigning a specific slot or a whole column')
+
+```
+
+Here are the rest of the columns for the model list.
+```{r Model Table sans stanzas}
+#Model
+## Biomass
+biomass <- c(1.44,
+             0.56,
+             1.34,
+             0.93,
+             0.45,
+             0.16,
+             0.25,
+             0.54,
+             1.92,
+             48.81)
+
+## Production by biomass
+
+pb <- c(1.69,
+        1.52,
+        0.71,
+        0.48,
+        2.00,
+        2.00,
+        14.50,
+        92.43,
+        118.7,
+        NA)
+
+## Consumption by biomass
+
+qb <- c(4.93,
+        2.19,
+        5.09,
+        5.18,
+        5.29,
+        5.14,
+        48.33,
+        308.1,
+        rep(NA,2))
+```
+
+
+```{r Model Table sans stanzas}
+REco.params$model[, Biomass := biomass]
+REco.params$model[, PB := pb]
+REco.params$model[, QB := qb]
+```
+
+
+
+```{r}
+# #Fisheries
+# #Landings
+# fleet <- c(rep(NA, 11))
+# REco.params$model[, Fleet := fleet]
+# 
+# #Discards
+# 
+# fleet.d <- c(rep(NA, 11))
+# REco.params$model[, Fleet.disc := fleet.d]
+```
+
+```{r Model Table sans stanzas}
+#Biomass accumulation 
+REco.params$model[, BioAcc  := c(2.28,0.83,0.93,0.43,rep(0, 6))]
+
+# Unassimilated consumption
+REco.params$model[, Unassim := c(rep(0.2, 6), rep(0.4, 2), rep(0, 2))]
+
+#Detrital Fate
+REco.params$model[, Detritus := c(rep(1, 9), rep(1, 1))]
+# REco.params$model[, Discards := c(rep(0,10))]
+# 
+# #Fisheries
+# #Landings
+# trawl  <- c(rep(0, 4), 0.08, 0, 0.32, 0, 0.09, 0, 0.05, 0.2, rep(0, 10), rep(NA, 3))
+# mid    <- c(rep(0, 12), 0.3, 0.08, 0.02, rep(0, 7), rep(NA, 3))
+# dredge <- c(rep(0, 15), 0.1, 0.5, rep(0, 5), rep(NA, 3))
+# REco.params$model[, Trawlers := trawl]
+# REco.params$model[, Midwater := mid]
+# REco.params$model[, Dredgers := dredge]
+# 
+# #Discards
+# trawl.d  <- c(1e-5, 1e-7, 0.001, 0.001, 0.005, 0.001, 0.009, 0.001, 0.04, 0.001,
+#               0.01, 0.08, 0.001, 0.001, 0.001, rep(0, 7), rep(NA, 3))
+# mid.d    <- c(rep(0, 2), 0.001, 0.001, 0.01, 0.001, 0.01, rep(0, 4), 0.05, 0.05,
+#               0.01, 0.01, rep(0, 7), rep(NA, 3))
+# dredge.d <- c(rep(0, 3), 0.001, 0.05, 0.001, 0.05, 0.001, 0.05, 0.001, 0.01, 0.05,
+#               rep(0, 3), 0.09, 0.01, 1e-4, rep(0, 4), rep(NA, 3))
+# REco.params$model[, Trawlers.disc := trawl.d]
+# REco.params$model[, Midwater.disc := mid.d]
+# REco.params$model[, Dredgers.disc := dredge.d]
+```
+
+```{r Model Table final, echo = F}
+knitr::kable(REco.params$model, 
+             caption = 'Example of completed model list')
+
+```
+
+###Stanza Parameters
+
+
+
+
+###Diet Parameters
+
+Note : 
+eg: REco.params$diet[Group == 'OtherGroundfish', Seabirds := 0.1]
+knitr::kable(REco.params$diet[, list(Group, Seabirds, Whales)])
+NA: import
+
+Here is the completed model parameter file for R Ecosystem:
+
+```{r diet fill}
+
+REco.params$diet[, Common_carp       := c(NA,NA,NA,NA, 0.01, 0.01, 0.18, 0.22,0.12,0.46,NA)]
+                 
+REco.params$diet[, Pike_perch        := c(NA,NA,NA,NA, 0.28, 0.02, 0.12, 0.56,NA,0.02,NA)]
+ 
+REco.params$diet[, Roach             := c(NA,NA,NA,NA,NA,NA, 0.02, 0.25,0.14,0.59,NA)]
+
+REco.params$diet[, Tench             := c(NA,NA,NA,NA,NA,NA, 0.22, 0.12,0.10,0.56,NA)]
+
+REco.params$diet[, Roach_juv         := c(NA,NA,NA,NA,NA,NA, 0.01, 0.20,0.39,0.40,NA)]
+
+REco.params$diet[, Tench_juv         := c(NA,NA,NA,NA,NA,NA, 0.01, 0.15,0.24,0.60,NA)]
+
+REco.params$diet[, Macroinvertebrate := c(NA,NA,NA,NA,NA,NA, 0.08, 0.16,0.35,0.41,NA)]
+
+REco.params$diet[, Zooplancton     := c(NA,NA,NA,NA,NA,NA, NA, 0.11,0.27,0.62,NA)]
+
+
+```
+```{r Dietfile Table, echo = F}
+knitr::kable(REco.params$diet, caption = 'Diet parameters for R Ecosystem')
+```
+
+```{r}
+colSums(REco.params$diet[,2:length(REco.params$diet)],na.rm = T)
+
+
+```
+
+
+
+###Pedigree parameters
+Rpath does not currently use pedigrees however, future Rpath extensions will use
+them.  Therefore we include them in the current parameter object. The
+default values are 1 (low confidence).  These defaults are not changed for R
+Ecosystem but can obviously be changed in a similar manner to the other parameter
+files.
+```{r pedigree table, echo = F}
+knitr::kable(REco.params$pedigree, caption = 'Pedigree parameters for R Ecosystem')
+```
+
+## Running Ecopath
+
+
+After creating the parameter object, running ecopath in R is relatively 
+straightforward.  It is just the function `rpath` supplied with the parameter object.
+Additionally, you can supply an ecosystem name for the output.
+
+```{r Running ecopath}
+REco <- rpath(REco.params, eco.name = 'R Ecosystem')
+REco
+```
+
+The output object from `rpath` is an S3 object type called 'Rpath'.  Rpath objects
+are a list of parameters from the mass balance.  However, the `print` function will
+display the same information as the "Basic Estimates" tab from EwE. You will also 
+notice that the `print` function will display whether the model is balanced or not.
+If the model was not balanced, it would list the groups that are not balanced.
+
+You can also display the mortalities associated with each group by supplying the
+argument `morts = T` to the `print` function.
+
+```{r Ecopath morts}
+print(REco, morts = T)
+```
+
+Note that if you wish to save the `print` output you need to use the function
+`write.rpath`.  This function will also accept the argument 'morts = T'.
+
+The generic function `summary` will display some summary statistics on the model
+as well as a list of attributes you can access.  To access any of the other 
+attributes simply use the standard list notation.
+
+```{r Ecopath summaries}
+summary(REco)
+REco$TL
+```
+
+One of the advantages of R is its graphical ability.  Users can feel free to develop
+their own graphical routines for the Rpath outputs.  However, we have included
+a basic food web plot.  The routine can include fisheries, display group numbers or 
+names, and even highlight a particular group.
+
+```{r Food Web Plots, fig.align = 'center', fig.height = 7, fig.width = 7}
+webplot(REco)
+webplot(REco, labels = T)
+# webplot(REco, fleets = T, highlight = 'AduRoundfish1')
+```
+
+
+
+
+
+# Calcul
+
+```{r}
+# for (i in 1:length(scenarios)) {
+#  list_comb.d[[i]]=rbind(list_comb.d[[i]],data_ini.juv)
+# }
+```
+
+```{r}
+# For adult group
+
+list_comb.d[[1]]$WT_Stk=list_comb.d[[1]]$prc_scn/100*list_comb.d[[1]]$Stocking_Tot #Calcul initial biomass by percentage in sceanrio (Stocking total fix)
+
+list_comb.d[[1]]$Nb_Stk=list_comb.d[[1]]$WT_Stk/list_comb.d[[1]]$Wi_Stk #Calcul initial number of species
+
+list_comb.d[[1]]$Wf_F=list_comb.d[[1]]$Wi_Stk*exp((list_comb.d[[1]]$SGR*list_comb.d[[1]]$Duration)/100)   #Calcul final Weight mean by SGR and duration (= 270 day)
+
+list_comb.d[[1]]$Nb_F=(1-list_comb.d[[1]]$Mortality/100)*list_comb.d[[1]]$Nb_Stk #Calcul final number by mortality rate
+
+list_comb.d[[1]]$WT_F=list_comb.d[[1]]$Nb_F*list_comb.d[[1]]$Wf_F #Calcul final biomass
+```
+
+
+```{r}
+# For juvenil group
+
+list_comb.d[[1]]$Wf_F[5]=4.30 #Fix initial weight of Roach_juv 
+list_comb.d[[1]]$Wf_F[6]=5.60 #Fix initial weight of Tench_juv 
+
+list_comb.d[[1]]$Nb_F[5]=list_comb.d[[1]]$Nb_Stk[3]*72 # #Calcul final number of Roach-juv by multiplying the number of adults by 72 (fix including mortality ) 
+list_comb.d[[1]]$Nb_F[6]=list_comb.d[[1]]$Nb_Stk[4]*108 # #Calcul final number of Tench-juv by multiplying the number of adults by 108 (fix including mortality ) 
+
+list_comb.d[[1]]$WT_F[5]=list_comb.d[[1]]$Wf_F[5]*list_comb.d[[1]]$Nb_F[5] #Calcul final biomass of Roach_juv 
+list_comb.d[[1]]$WT_F[6]=list_comb.d[[1]]$Wf_F[6]*list_comb.d[[1]]$Nb_F[6]   #Calcul final biomass of Tench_juv
+```
+
+
+```{r}
+list_comb.d[[1]]$Prc_F=list_comb.d[[1]]$WT_F/sum(list_comb.d[[1]]$WT_F)*100 #Calcul final percentage by species
+
+list_comb.d[[1]]$Rdt.net=((list_comb.d[[1]]$WT_F-list_comb.d[[1]]$WT_Stk)/1000)/0.1 # Yield net kg/ha (by pond surface 0.1 ha)
+```
+
+
+```{r}
+# Duplicate the scenario name
+list_comb.d[[1]]$scenario[c(5:6)]=list_comb.d[[1]]$scenario[1]
+```
+
+
+```{r}
+list_comb.d[[1]]$Z=-(log(list_comb.d[[1]]$Nb_F/list_comb.d[[1]]$Nb_Stk))#Calcul Z
+
+list_comb.d[[1]]$Nb.mean=(list_comb.d[[1]]$Nb_Stk-list_comb.d[[1]]$Nb_F)/list_comb.d[[1]]$Z#Calcul mean number
+
+list_comb.d[[1]]$W.mean=(list_comb.d[[1]]$Wi_Stk+list_comb.d[[1]]$Wf_F)/2 #Calcul mean weight
+
+# Calcul mean biomass for adult group
+list_comb.d[[1]]$B.g=list_comb.d[[1]]$Nb.mean*list_comb.d[[1]]$W.mean
+# Calcul mean biomass for juvenil group
+list_comb.d[[1]]$B.g[5]=list_comb.d[[1]]$WT_F[5]/2 #Calcul mean biomass of Roach_juv 
+list_comb.d[[1]]$B.g[6]=list_comb.d[[1]]$WT_F[6]/2 #Calcul mean biomass of Tench_juv
+
+
+list_comb.d[[1]]$B.g.m2=list_comb.d[[1]]$B.g/1000 #Calcul mean biomass in g/m2
+
+list_comb.d[[1]]$B_DW=list_comb.d[[1]]$B.g.m2*list_comb.d[[1]]$DW_rate #Calcul mean biomass in dry weight
+
+list_comb.d[[1]]$BA.g=list_comb.d[[1]]$WT_F-list_comb.d[[1]]$WT_Stk #Calcul biomass accumulation
+
+#Calcul P:B for adult group
+list_comb.d[[1]]$`P/B`=list_comb.d[[1]]$BA.g/list_comb.d[[1]]$B.g+list_comb.d[[1]]$Z
+
+#Calcul P:B for juv group
+list_comb.d[[1]]$`P/B`[5]=list_comb.d[[1]]$BA.g[5]/list_comb.d[[1]]$B.g[5]
+list_comb.d[[1]]$`P/B`[6]=list_comb.d[[1]]$BA.g[6]/list_comb.d[[1]]$B.g[6]
+
+list_comb.d[[1]]$Bacc.g.m2=list_comb.d[[1]]$BA.g/1000 # Calcul Biomass acc in g/m2
+
+# Calcul Biomass accumulate in dry weight
+list_comb.d[[1]]$Baacc_DW=list_comb.d[[1]]$Bacc.g.m2*list_comb.d[[1]]$DW_rate
+
+```
+
+
+```{r}
+# Add resource group
+for (i in 1:length(scenarios)) {
+ list_comb.d[[i]]=rbind(list_comb.d[[i]],data_ini.Rgroup)
+}
+```
+
+
+```{r}
+# Put in dataframe
+
+All_data=do.call(rbind.data.frame,list_comb.d)
+```
+
+
+
