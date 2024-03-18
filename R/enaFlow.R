@@ -159,7 +159,7 @@ enaFlow <- function(x,zero.na=TRUE,balance.override=FALSE){
   p <- as.matrix(rep(1,n),nrow=n)
   dN <- diag(N)
   TSTc <- sum((dN-p)/dN *T.)
-  FCI <- TSTc/TST
+  FCI <- TSTc/TSTp
 
                                         # non-locality (realized)
   direct <- sum(G %*% input)
