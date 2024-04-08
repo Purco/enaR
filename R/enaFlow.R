@@ -151,7 +151,9 @@ enaFlow <- function(x,zero.na=TRUE,balance.override=FALSE){
   TST <- sum(T.)  # total system throughflow
   TSTp <- sum(Flow) + sum(x%v%'input') + sum(x%v%'output') # total system throughput
 
-  Boundary <- sum(input)
+  # Boundary <- sum(input)
+  Boundary <- sum(output) # change PR (assuming balance: import=export)
+  
   APL <- TST/Boundary  # Average Path Lenght (Finn 1976; aka network
                       # aggradation, multiplier effect)
 
