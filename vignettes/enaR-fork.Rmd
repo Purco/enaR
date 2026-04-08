@@ -490,7 +490,6 @@ plot(orig.network)
 ```{r}
 remotes::install_github('https://github.com/Purco/enaR.git')
 
-
 ```
 
 
